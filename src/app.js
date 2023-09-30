@@ -2,9 +2,20 @@ import express from "express";
 import net from "net"; // UNIX Domain sockets
 import cors from "cors";
 
-import fs from "fs";
-// const 
-const PORT = process.env.PORT ?? 1234;
+
+const PORT = process.env.PORT ?? 2032;
+
+let scheme = {
+    accel: "accelerometer.acceleration",
+    gyro: "orientation",
+    gyro_v: "gyroscope.angular_velocity",
+    system: {
+        last_contact_recieved: "last_contact_recieved",
+        status: "status",
+        logs: "logs"
+    }
+};
+
 
 const app = express();
 
@@ -12,18 +23,6 @@ app.use(cors({
     origin: "*"
 }));
 
-let scheme = {
-    // accel: "acceleration",
-    gyro: "angle",
-    engine: {
-        power: "engpwr"
-    },
-    system: {
-        time: "time",
-        last_contact_recieved: "last_contact_recieved",
-
-    }
-}
 
 /** @type {Object<string, string|number|boolean>} */
 let raw_data = {
@@ -33,35 +32,88 @@ let logs = [];
 let commands = [];
 let readables = {};
 
-const server_to_controller = net.createServer((socket) => {
-    socket.write("set filter 0.1;")
-    socket.on("data", (data) => {
-        // console.log(data.toString("utf-8"));
-        const message = JSON.parse(data.toString("utf-8"));
-        raw_data["last_contact_recieved"] = Date.now();
 
-        if(message.type === "advertise") {
-            readables = message.readables;
-            commands = message.commands;
+class Consumer {
 
-            console.log(readables);
-            console.log(commands);
-        }else {
-            raw_data = message.data;
-            if("out" in message) {
-                logs = logs.concat(message.out);
-                // console.log(logs);
+    constructor({ host, port }) {
+        this.host = host;
+        this.port = port;
+        this.reconnect();
+        this.timeout = null;
+    }
+
+    reconnect() {
+        if(this.socket != null && !this.socket.closed) this.socket.end();
+
+        this.socket = net.connect({ host: this.host, port: this.port }, () => {this.onConnect()});
+        this.socket.on("data", (data) => {
+            try {
+                const messages = data.toString("utf-8").split("\x1f").filter((a) => a.length > 0);
+                messages.forEach((message) => {
+                    message = JSON.parse(message);
+                    // console.log(message);
+            
+                    if(message.type === "advertise") {
+                        readables = message.readables;
+                        commands = message.commands;
+                        
+                        console.log(readables);
+                        console.log(commands);
+                    }else if(message.type === "update") {
+                        raw_data = message.data;
+                        // console.log(raw_data);
+                        if("out" in message) {
+                            logs = logs.concat(message.out);
+                            raw_data.logs = message.out;
+                            if(message.out.length > 1) console.log(message.out);
+                            console.log(logs);
+                        }else {
+                            
+                        }
+                    }
+                });
+                raw_data["last_contact_recieved"] = Date.now();
+            }catch(e) { 
+
             }
-        }
-    })
-});
+        });
+
+        this.socket.on("error", () => {
+            this.socket.end();
+            if(this.timeout == null) {
+                const seconds = 5;
+                console.log(`Failed to connect to consumer, trying again in ${seconds}s`);
+                setTimeout(() => {
+                    this.reconnect();
+                }, seconds * 1000);
+            }
+        });
+
+        this.socket.on("close", () => {
+            this.socket.end();
+            if(this.timeout == null) {
+                const seconds = 5;
+                console.log(`Failed to connect to consumer, trying again in ${seconds}s`);
+                setTimeout(() => {
+                    this.reconnect();
+                }, seconds * 1000);
+            }
+        });
+    }
+
+    onConnect() {
+        this.socket.write("advertise;");
+    }
+
+    execute(command, args) {
+        this.socket.write(`${command} ${args.join(" ")};`);
+    }
+}
 
 
-fs.unlinkSync("/tmp/server.sock");
-server_to_controller.listen("/tmp/server.sock");
+const consumer = new Consumer({ host: "drone", port: "3000"}); 
 
-app.use(express.json());
-// app.use("/execute", express.json());
+
 
 function build_data_from_scheme(scheme, raw_data) {
     if(typeof(scheme) === "string") {
@@ -75,8 +127,19 @@ function build_data_from_scheme(scheme, raw_data) {
                     }, {});
     }else {
         // ?????
+        throw "Invalid type in scheme"
     }
 }
+
+app.use(express.json());
+
+app.get("/raw", (req, res) => {
+    res.status(200)
+        .json({
+            success: true,
+            result: raw_data
+        });
+});
 
 app.get("/data/*", (req,res) => {
     try {
@@ -108,6 +171,13 @@ app.get("/data/*", (req,res) => {
     }
 });
 
+app.get("/readable", (req, res) => {
+    res.status(200).json({ success: true, result: readables });
+});
+app.get("/commands", (req, res) => {
+    res.status(200).json({ success: true, result: commands });
+});
+
 app.get("/data", (req,res) => {
     
     res
@@ -120,14 +190,30 @@ app.get("/data", (req,res) => {
 });
 
 app.post("/execute", (req, res) => {
-    console.log(req.body);
-    res
-        .status(200)
+    // console.log(req.body);
+    if(("command" in req.body) && ("args" in req.body)) {
+        const command = req.body.command;
+        const args = req.body.args;
+        
+        consumer.execute(command, args);
+
+        res.status(200)
+            .json({success: true});
+        return;
+    }
+
+
+
+    res.status(200)
         .json({success: false});
 });
+
+app.get("/", (req, res) => {
+    res.send("hi");
+})
 
 
 
 app.listen(PORT, () => {
-
+    console.log(PORT);
 });
