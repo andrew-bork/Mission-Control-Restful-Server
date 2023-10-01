@@ -5,6 +5,42 @@ import cors from "cors";
 
 const PORT = process.env.PORT ?? 2032;
 
+/**
+ *  raw_data: {
+ *      a: 0,
+ *      b: 1,
+ *      c: 2, 
+ *      d: 3
+ *  }
+ * 
+ *  scheme: {
+ *      group1: {
+ *          a: "a",
+ *          c: "c"
+ *      },
+ *      group2 {
+ *          group3: {
+ *              a: "a",
+ *              b: "b"
+ *          },
+ *          d: "d"
+ *      }
+ * }
+ * 
+ * result: {
+ *      group1: {
+ *          a: 0,
+ *          c: 2
+ *      },
+ *      group2 {
+ *          group3: {
+ *              a: 0,
+ *              b: 1
+ *          },
+ *          d: 3
+ *      }
+ * }
+ */
 let scheme = {
     accel: "accelerometer.acceleration",
     gyro: "orientation",
@@ -33,15 +69,25 @@ let commands = [];
 let readables = {};
 
 
+/**
+ * Abstraction over connection to consumer.
+ */
 class Consumer {
 
+    /**
+     * 
+     * @param {{host: string, port: string}} param0 
+     */
     constructor({ host, port }) {
         this.host = host;
         this.port = port;
         this.reconnect();
         this.timeout = null;
     }
-
+    
+    /**
+     * Reconnect the socket. Destroys the original sockt if it exists and isn't closed.
+     */
     reconnect() {
         if(this.socket != null && !this.socket.closed) this.socket.end();
 
@@ -57,8 +103,8 @@ class Consumer {
                         readables = message.readables;
                         commands = message.commands;
                         
-                        console.log(readables);
-                        console.log(commands);
+                        // console.log(readables);
+                        // console.log(commands);
                     }else if(message.type === "update") {
                         raw_data = message.data;
                         // console.log(raw_data);
@@ -105,6 +151,12 @@ class Consumer {
         this.socket.write("advertise;");
     }
 
+    /**
+     * Execute command with args.
+     * 
+     * @param {string} command 
+     * @param {[string]} args 
+     */
     execute(command, args) {
         this.socket.write(`${command} ${args.join(" ")};`);
     }
@@ -115,6 +167,48 @@ const consumer = new Consumer({ host: "drone", port: "3000"});
 
 
 
+/**
+ * Structures a new object, using a scheme, from raw_data.
+ * 
+ *  raw_data: {
+ *      a: 0,
+ *      b: 1,
+ *      c: 2, 
+ *      d: 3
+ *  }
+ * 
+ *  scheme: {
+ *      group1: {
+ *          a: "a",
+ *          c: "c"
+ *      },
+ *      group2 {
+ *          group3: {
+ *              a: "a",
+ *              b: "b"
+ *          },
+ *          d: "d"
+ *      }
+ * }
+ * 
+ * result: {
+ *      group1: {
+ *          a: 0,
+ *          c: 2
+ *      },
+ *      group2 {
+ *          group3: {
+ *              a: 0,
+ *              b: 1
+ *          },
+ *          d: 3
+ *      }
+ * }
+ * 
+ * @param {Any}} scheme 
+ * @param {Any} raw_data 
+ * @returns {Any}
+ */
 function build_data_from_scheme(scheme, raw_data) {
     if(typeof(scheme) === "string") {
         if(scheme in raw_data) return raw_data[scheme];
@@ -133,6 +227,13 @@ function build_data_from_scheme(scheme, raw_data) {
 
 app.use(express.json());
 
+/**
+ * DEBUG
+ * GET /raw
+ * 
+ * Sends back the raw data from the consumer. The json is not structured.
+ * 
+ */
 app.get("/raw", (req, res) => {
     res.status(200)
         .json({
@@ -141,35 +242,44 @@ app.get("/raw", (req, res) => {
         });
 });
 
-app.get("/data/*", (req,res) => {
-    try {
+/**
+ * GET /data/*
+ * 
+ * Sends back the latest data from the consumer. The json is structured based on the scheme object.
+ * Additional paths in the path narrow down the search path.
+ * 
+ * /data/a/b -> data.a.b
+ */
 
-        const requested_scheme = 
-            req.url
-                .slice(6) // /data/accel/x -> accel/x
-                .split("/") // accel/x -> ["accel", "x"]
-                .filter((a) => a.length > 0) // Filter all the empty elements out
-                .reduce((prev, curr, i, array) => {
-                    if(curr in prev) return prev[curr];
-                    else throw `Scheme "${array.join(".")}" does not exist.`;
-                }, scheme); // scheme.accel.x
+// app.get("/data/*", (req,res) => {
+//     try {
 
-        res.status(200)
-            .set("Cache-Control", "no-cache")
-            .json({
-                success:true,
-                result: build_data_from_scheme(requested_scheme, raw_data)
-            });
-    }catch(e) {
-        res
-            .status(404)
-            .set("Cache-Control", "no-cache")
-            .json({
-                success:false,
-                reason: e
-            });
-    }
-});
+//         const requested_scheme = 
+//             req.url
+//                 .slice(6) // /data/accel/x -> accel/x
+//                 .split("/") // accel/x -> ["accel", "x"]
+//                 .filter((a) => a.length > 0) // Filter all the empty elements out
+//                 .reduce((prev, curr, i, array) => {
+//                     if(curr in prev) return prev[curr];
+//                     else throw `Scheme "${array.join(".")}" does not exist.`;
+//                 }, scheme); // scheme.accel.x
+
+//         res.status(200)
+//             .set("Cache-Control", "no-cache")
+//             .json({
+//                 success:true,
+//                 result: build_data_from_scheme(requested_scheme, raw_data)
+//             });
+//     }catch(e) {
+//         res
+//             .status(404)
+//             .set("Cache-Control", "no-cache")
+//             .json({
+//                 success:false,
+//                 reason: e
+//             });
+//     }
+// });
 
 app.get("/readable", (req, res) => {
     res.status(200).json({ success: true, result: readables });
@@ -178,6 +288,12 @@ app.get("/commands", (req, res) => {
     res.status(200).json({ success: true, result: commands });
 });
 
+/**
+ * GET /data
+ * 
+ * Sends back the latest data from the consumer. The json is structured based on the scheme object.
+ * 
+ */
 app.get("/data", (req,res) => {
     
     res
@@ -189,6 +305,16 @@ app.get("/data", (req,res) => {
         });
 });
 
+/**
+ * POST /execute
+ * 
+ * body: {
+ *      command: ...,
+ *      args: [...]
+ * }
+ * 
+ * Executes the command on the consumer. DOES NOT CHECK IF THE COMMAND EXISTS.
+ */
 app.post("/execute", (req, res) => {
     // console.log(req.body);
     if(("command" in req.body) && ("args" in req.body)) {
@@ -208,6 +334,11 @@ app.post("/execute", (req, res) => {
         .json({success: false});
 });
 
+/**
+ * Debug
+ * GET /
+ * Just sends hi.
+ */
 app.get("/", (req, res) => {
     res.send("hi");
 })
